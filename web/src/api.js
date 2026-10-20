@@ -61,3 +61,23 @@ export async function getCode({ repo_id, path, start_line, end_line }) {
 
   return request(`/code?${params}`);
 }
+
+export async function getNeighborhood({
+  repo_id,
+  entity_id,
+  path,
+  name,
+  hops = 2,
+  limit = 60,
+}) {
+  const params = new URLSearchParams({ repo_id });
+
+  if (entity_id) params.set("entity_id", entity_id);
+  if (path) params.set("path", path);
+  if (name) params.set("name", name);
+
+  params.set("hops", String(hops));
+  params.set("limit", String(limit));
+
+  return request(`/graph/neighborhood?${params}`);
+}

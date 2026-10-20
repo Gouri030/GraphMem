@@ -6,6 +6,7 @@ import {
   localizeIssue,
   getCode,
 } from "./api";
+import NeighborhoodGraph from "./NeighborhoodGraph";
 import "./App.css";
 
 const EVIDENCE_TYPES = [
@@ -448,6 +449,11 @@ function App() {
                   </div>
                 </div>
               )}
+
+              <NeighborhoodGraph
+                repoId={repoId}
+                candidate={selected}
+              />
             </>
           )}
         </aside>
