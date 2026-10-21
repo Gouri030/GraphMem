@@ -9,6 +9,7 @@ from graphmem.models.entities import CodeEntity, EntityType
 from graphmem.models.relations import RelationType
 
 RELS = {
+    RelationType.CONTAINS,
     RelationType.CALLS,
     RelationType.REFERENCES,
     RelationType.INHERITS,
@@ -58,4 +59,12 @@ class ScopeGraph:
             if edge_weights.get(rel, 0.0) > 0
         ]
         items.sort(key=lambda x: (-edge_weights[x[1]], x[0]))
-        return items[:limit]
+        # A file or class can legitimately contain more than `limit` scopes.
+        # Keep all direct descendants so hierarchy traversal does not silently
+        # discard the function that actually owns the fault.
+        descendants = [
+            item for item in items
+            if item[1] == RelationType.CONTAINS and item[2] == "out"
+        ]
+        other = [item for item in items if item not in descendants]
+        return descendants + other[:limit]

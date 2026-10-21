@@ -7,15 +7,29 @@ from dataclasses import dataclass, field
 from graphmem.dataflow.analyzer import DataFlowSlicer, SliceDirection
 from graphmem.graph.store import GraphStore
 from graphmem.indexing.code_index import (
-    CodeIndex, extract_paths, extract_symbols, statement_header, tokenize,
+    CodeIndex, statement_header, tokenize,
 )
 from graphmem.models.entities import CodeEntity, EntityType
 from graphmem.ranking.config import RankConfig
 from graphmem.retrieval.evidence import Evidence, EvidenceProvider
+from graphmem.retrieval.issue_signals import IssueSignals
 from graphmem.retrieval.scope_graph import ScopeGraph
 
 BUILTIN_SIGNALS = {"lexical", "graph", "dataflow"}
 CONTEXT_SIGNALS = {"graph", "history", "artifact", "semantic"}
+TEST_TERMS = {"test", "tests", "testing", "pytest", "unittest", "fixture", "assertion"}
+
+
+def _is_test_scope(entity: CodeEntity) -> bool:
+    path_parts = (entity.path or "").replace("\\", "/").lower().split("/")
+    filename = path_parts[-1] if path_parts else ""
+    name = (entity.name or "").lower()
+    return (
+        any(part in {"test", "tests", "testing"} for part in path_parts[:-1])
+        or filename.startswith("test_")
+        or filename.endswith("_test.py")
+        or name.startswith(("test_", "test"))
+    )
 
 
 @dataclass
@@ -124,9 +138,23 @@ class Localizer:
         timings: dict[str, float] = {}
         t_start = time.perf_counter()
 
-        tokens = tokenize(issue)
-        symbols = extract_symbols(issue)
-        paths = extract_paths(issue)
+        signals = IssueSignals.parse(issue)
+        tokens = signals.query_tokens
+        symbols = signals.symbols
+        paths = signals.paths
+        # Error terms are searched separately, not allowed to swamp the prose query.
+        error_tokens = sorted(signals.error_terms)
+        structured_tokens = list(dict.fromkeys(tokens + error_tokens + [t for sym in symbols for t in tokenize(sym)]))
+        test_related = bool(TEST_TERMS & set(tokens)) or any(
+            any(part in {"test", "tests", "testing"} for part in p.lower().replace("\\", "/").split("/"))
+            for p in paths
+        ) or any(sym.lower().startswith("test") for sym in symbols)
+
+        def test_penalty(entity: CodeEntity) -> float:
+            return (
+                1.0 if test_related or not _is_test_scope(entity)
+                else cfg.test_scope_penalty
+            )
 
         entities: dict[str, CodeEntity] = {}
         evidence: dict[str, list[Evidence]] = defaultdict(list)
@@ -141,13 +169,45 @@ class Localizer:
                 evidence[e.id].append(
                     Evidence("lexical", "BM25 over names, paths and statement text", s)
                 )
+            # Exact identifiers (including one-word names) are high-value evidence,
+            # but only boost explicitly mentioned names verified by CodeIndex.
             for sym in symbols:
-                for e in self.index.by_name.get(sym, []):
+                matches = self.index.resolve_symbol(sym)
+                for e in matches:
                     entities[e.id] = e
-                    lex[e.id] = min(1.0, lex.get(e.id, 0.0) + 0.5)
+                    bonus = cfg.explicit_symbol_bonus
+                    lex[e.id] = min(1.0, lex.get(e.id, 0.0) + bonus)
                     evidence[e.id].append(
-                        Evidence("lexical", f"exact name match: {sym}", 1.0, {"symbol": sym})
+                        Evidence("lexical", f"verified explicit symbol: {sym}", 1.0, {"symbol": sym})
                     )
+            # Traceback frames provide direct file/function/line evidence.
+            for frame in signals.frames:
+                for e in self.index.scopes_for_path(frame.path):
+                    entities[e.id] = e
+                    bonus = 0.85 if e.type == EntityType.FILE else 0.25
+                    lex[e.id] = min(1.0, lex.get(e.id, 0.0) + bonus)
+                    evidence[e.id].append(Evidence(
+                        "lexical", f"traceback frame: {frame.path}:{frame.line}"
+                        + (f" in {frame.function}" if frame.function else ""),
+                        1.0, {"path": frame.path, "line": frame.line, "function": frame.function},
+                    ))
+                    if frame.function:
+                        for candidate in self.index.by_name.get(frame.function, []):
+                            if candidate.path == e.path:
+                                entities[candidate.id] = candidate
+                                lex[candidate.id] = min(1.0, lex.get(candidate.id, 0.0) + 0.9)
+                                evidence[candidate.id].append(Evidence(
+                                    "lexical", f"traceback function at line {frame.line}",
+                                    1.0, {"line": frame.line, "function": frame.function},
+                                ))
+            for typ, message in signals.exceptions:
+                evidence_label = f"exception: {typ}" + (f": {message}" if message else "")
+                # Exception names/messages are included in lexical retrieval, but
+                # only repository candidates matching their tokens are boosted.
+                for e, score in self.index.search_scopes(tokenize(typ + " " + message), cfg.lexical_pool):
+                    entities[e.id] = e
+                    lex[e.id] = min(1.0, lex.get(e.id, 0.0) + 0.2 * score)
+                    evidence[e.id].append(Evidence("lexical", evidence_label, score))
             for p in paths:
                 for e in self.index.scopes_for_path(p):
                     bonus = 0.5 if e.type == EntityType.FILE else 0.25
@@ -161,10 +221,16 @@ class Localizer:
         # ---------------- Stage 2: graph expansion ----------------
         t = time.perf_counter()
         if w.get("graph", 0.0) > 0 and lex:
-            seeds = [i for i, _ in sorted(lex.items(), key=lambda kv: -kv[1])[: cfg.seed_limit]]
+            seeds = [
+                i for i, _ in sorted(
+                    lex.items(),
+                    key=lambda kv: (-(kv[1] * test_penalty(entities[kv[0]])), kv[0]),
+                )[: cfg.seed_limit]
+            ]
             best: dict[str, tuple[float, list[str], list[str]]] = {}
             for sid in seeds:
-                for nid, val in self._expand(sid, lex[sid], cfg).items():
+                seed_score = lex[sid] * test_penalty(entities[sid])
+                for nid, val in self._expand(sid, seed_score, cfg).items():
                     if val[0] > best.get(nid, (0.0,))[0]:
                         best[nid] = val
             for nid, (score, path, rels) in best.items():
@@ -186,6 +252,7 @@ class Localizer:
         prelim_active = active_all - {"dataflow"}
         prelim = {
             i: self._combine(self._strengths(evidence[i], lex.get(i, 0.0)), w, prelim_active)
+            * test_penalty(entities[i])
             for i in entities
         }
         pool = [i for i, s in sorted(prelim.items(), key=lambda kv: -kv[1]) if s > 0][: cfg.pool_size]
@@ -203,21 +270,22 @@ class Localizer:
 
         # ---------------- Stage 3: statements + data flow ----------------
         t = time.perf_counter()
-        q_set = set(tokens)
+        q_set = set(structured_tokens)
         idf_q = sorted((self.index.idf[x] for x in q_set if x in self.index.idf), reverse=True)
         qmax = sum(idf_q[:5])
 
         hits: list[ScopeHit] = []
         for sid in pool:
             scope = entities[sid]
-            stmts, df_strength = self._statements(scope, q_set, qmax, cfg, prelim[sid])
+            frame_lines = {f.line for f in signals.frames if f.path.lstrip("./") == (scope.path or "").lstrip("./")}
+            stmts, df_strength = self._statements(scope, q_set, qmax, cfg, prelim[sid], frame_lines)
             if df_strength > 0:
                 evidence[sid].append(Evidence(
                     "dataflow", "data flow links statements that match the issue", df_strength
                 ))
             strengths = self._strengths(evidence[sid], lex.get(sid, 0.0))
             strengths["dataflow"] = df_strength
-            score = self._combine(strengths, w, active_all)
+            score = self._combine(strengths, w, active_all) * test_penalty(scope)
             hits.append(ScopeHit(scope, score, strengths, evidence[sid], stmts))
         timings["statements"] = (time.perf_counter() - t) * 1000
 
@@ -270,13 +338,14 @@ class Localizer:
             frontier = nxt
         return best
 
-    def _statements(self, scope, q_set, qmax, cfg, scope_score):
+    def _statements(self, scope, q_set, qmax, cfg, scope_score, traceback_lines=None):
         """Rank statements inside one scope. Returns (hits, dataflow strength)."""
         w = cfg.weights
         stmts = self.slicer.statements_in_scope(scope.id)
-        if not stmts or qmax <= 0:
+        if not stmts:
             return [], 0.0
 
+        traceback_lines = traceback_lines or set()
         spans: dict[str, tuple[int, int]] = {}
         lex_s: dict[str, float] = {}
         matched: dict[str, list[str]] = {}
@@ -288,6 +357,9 @@ class Localizer:
                 raw = sum(self.index.idf.get(tok, 0.0) for tok in hit)
                 lex_s[s.id] = min(1.0, raw / qmax)
                 matched[s.id] = sorted(hit)
+            if start in traceback_lines:
+                lex_s[s.id] = max(lex_s.get(s.id, 0.0), 1.0)
+                matched.setdefault(s.id, []).append("traceback line")
 
         df: dict[str, tuple[float, Evidence]] = {}
         if w.get("dataflow", 0.0) > 0 and lex_s:

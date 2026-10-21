@@ -19,6 +19,7 @@ def _default_weights() -> dict[str, float]:
 def _default_edge_weights() -> dict[RelationType, float]:
     return {
         RelationType.CALLS: 1.0,
+        RelationType.CONTAINS: 0.9,
         RelationType.INHERITS: 0.8,
         RelationType.REFERENCES: 0.6,
         RelationType.IMPORTS: 0.4,
@@ -36,11 +37,13 @@ class RankConfig:
     max_depth: int = 2            # graph hops
     hop_decay: float = 0.6        # multiplier per hop
     max_neighbors: int = 30       # per-node cap (avoids hub explosion)
-    pool_size: int = 30           # scopes that get statement-level analysis
+    pool_size: int = 60           # scopes that get statement-level analysis
     dataflow_seeds: int = 3       # statements used as slice seeds per scope
     slice_depth: int = 3
-    statements_per_scope: int = 5
-    statement_scope_mix: float = 0.3  # share of scope score in statement score
+    statements_per_scope: int = 10
+    statement_scope_mix: float = 0.55  # share of scope score in statement score
+    test_scope_penalty: float = 0.65   # downweight test code for non-test issues
+    explicit_symbol_bonus: float = 0.65
 
     def with_weights(self, name: str | None = None, **weights: float) -> "RankConfig":
         merged = dict(self.weights)
@@ -64,5 +67,12 @@ def ablation_configs() -> dict[str, RankConfig]:
         "graph+dataflow": base.with_weights("graph+dataflow", **{**off, "graph": 0.25, "dataflow": 0.25}),
         "graph+history": base.with_weights("graph+history", **{**off, "graph": 0.25, "history": 0.15}),
         "graph+artifact": base.with_weights("graph+artifact", **{**off, "graph": 0.25, "artifact": 0.10}),
-        "full": base.with_weights("full", history=0.15, artifact=0.10),
+        "full": base.with_weights(
+            "full",
+            graph=0.25,
+            dataflow=0.25,
+            history=0.15,
+            artifact=0.10,
+            semantic=0.0,
+        ),
     }

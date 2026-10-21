@@ -21,8 +21,10 @@ STOP = {
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _PART = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
-_BACKTICK = re.compile(r"`([^`\n]+)`")
+_QUOTED = re.compile(r"(?:`([^`\n]+)`|['\"]([^'\"\n]+)['\"])")
 _SYMBOL = re.compile(r"\b(?:[a-z]+_[a-z0-9_]+|[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+)\b")
+_QUALIFIED = re.compile(r"\b(?:[A-Za-z_]\w*\.)+[A-Za-z_]\w*\b")
+_EXPLICIT_NAME = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$")
 _PATH = re.compile(r"[\w./-]+\.py")
 
 SCOPE_TYPES = {EntityType.FILE, EntityType.CLASS, EntityType.FUNCTION, EntityType.METHOD}
@@ -45,12 +47,18 @@ def tokenize(text: str) -> list[str]:
 
 
 def extract_symbols(text: str) -> set[str]:
-    """Explicit symbols in an issue: `backticked`, snake_case, CamelCase."""
+    """Extract explicitly written code symbols, never every prose identifier."""
     found: set[str] = set()
-    for chunk in _BACKTICK.findall(text):
-        found.update(_WORD.findall(chunk))
-    found.update(_SYMBOL.findall(text))
-    return {s for s in found if len(s) > 2 and s.lower() not in STOP}
+    without_paths = _PATH.sub(" ", text)
+    for ticked, quoted in _QUOTED.findall(without_paths):
+        value = (ticked or quoted).strip()
+        # Inline code may include a call suffix; the symbol itself is the name.
+        value = value[:-2] if value.endswith("()") else value
+        if _EXPLICIT_NAME.fullmatch(value):
+            found.add(value)
+    found.update(_SYMBOL.findall(without_paths))
+    found.update(_QUALIFIED.findall(without_paths))
+    return {s for s in found if len(s) > 1 and s.lower() not in STOP}
 
 
 def extract_paths(text: str) -> set[str]:
@@ -113,6 +121,7 @@ class CodeIndex:
 
         self.children_names: dict[str, list[str]] = defaultdict(list)
         self.by_name: dict[str, list[CodeEntity]] = defaultdict(list)
+        self.by_qualified_name: dict[str, list[CodeEntity]] = defaultdict(list)
         self.by_path: dict[str, list[CodeEntity]] = defaultdict(list)
         # Maps every path suffix (e.g. "pkg/module.py") to scopes in that file.
         # This preserves suffix matching without scanning every known path.
@@ -122,6 +131,8 @@ class CodeIndex:
                 self.children_names[e.parent_id].append(e.name)
             if e.name:
                 self.by_name[e.name].append(e)
+            if e.qualified_name:
+                self.by_qualified_name[e.qualified_name].append(e)
             if e.path:
                 self.by_path[e.path].append(e)
                 normalized_path = e.path.replace("\\", "/").lstrip("./")
@@ -159,3 +170,26 @@ class CodeIndex:
             if key == path or key.endswith("/" + path):
                 out.extend(items)
         return out
+
+    def resolve_symbol(self, symbol: str) -> list[CodeEntity]:
+        """Resolve an explicit symbol against exact names in the repository."""
+        exact_qualified = self.by_qualified_name.get(symbol)
+        if exact_qualified:
+            return list(exact_qualified)
+        if "." not in symbol:
+            return list(self.by_name.get(symbol, []))
+
+        # Permit a qualified issue name whose module prefix differs from the
+        # repository's package prefix only when its qualified suffix is unique.
+        suffix_matches = [
+            entity
+            for entity in self.by_name.get(symbol.rsplit(".", 1)[-1], [])
+            if entity.qualified_name
+            and entity.qualified_name.endswith("." + symbol)
+        ]
+        if len(suffix_matches) == 1:
+            return suffix_matches
+        if suffix_matches:
+            return []
+        short_matches = self.by_name.get(symbol.rsplit(".", 1)[-1], [])
+        return list(short_matches) if len(short_matches) == 1 else []

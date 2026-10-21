@@ -80,3 +80,68 @@ def test_output_shape(tmp_path):
     cand = data["candidates"][0]
     assert {"file", "scope", "start_line", "end_line", "score", "evidence"} <= cand.keys()
     assert all({"type", "source", "weight"} <= e.keys() for e in cand["evidence"])
+
+def test_single_word_symbols_are_extracted_and_ranked(tmp_path):
+    from graphmem.indexing.code_index import extract_symbols
+
+    assert "parse" not in extract_symbols("parse is broken")
+    assert {"parse", "Parser"} <= extract_symbols("`parse` `Parser`")
+
+    (tmp_path / "parser.py").write_text(
+        "class Parser:\n"
+        "    def parse(self, value):\n"
+        "        return filter(value)\n",
+        encoding="utf-8",
+    )
+    loc = make_localizer(tmp_path)
+    # Existing helper repo is extended with a one-word symbol.
+    result = loc.localize("`parse` is broken")
+    assert any(h.entity.name == "parse" for h in result.scopes)
+
+
+def test_common_prose_word_does_not_get_exact_symbol_bonus(tmp_path):
+    from graphmem.indexing.code_index import extract_paths, extract_symbols
+
+    issue = "The merge operation produces incorrect output in `merge`. See src/forms/widgets.py."
+    symbols = extract_symbols(issue)
+    assert "merge" in symbols  # Only the backticked occurrence is explicit.
+    assert "merge" not in extract_symbols("The merge operation produces incorrect output")
+    assert "merge" in extract_symbols("The 'merge' function fails")
+    assert "Media._css" in extract_symbols("Media._css() raises an exception")
+    assert extract_paths(issue) == {"src/forms/widgets.py"}
+
+    (tmp_path / "ops.py").write_text(
+        "def merge(left, right):\n"
+        "    return left + right\n",
+        encoding="utf-8",
+    )
+    loc = make_localizer(tmp_path)
+
+    ordinary = loc.localize("The merge operation produces incorrect output")
+    merge_hit = next(hit for hit in ordinary.scopes if hit.entity.name == "merge")
+    assert all("verified explicit symbol" not in item.source for item in merge_hit.evidence)
+
+    explicit = loc.localize("The `merge` function produces incorrect output")
+    merge_hit = next(hit for hit in explicit.scopes if hit.entity.name == "merge")
+    assert any("verified explicit symbol: merge" in item.source for item in merge_hit.evidence)
+
+
+def test_traceback_extracts_and_uses_file_function_and_line(tmp_path):
+    from graphmem.retrieval.issue_signals import IssueSignals
+
+    issue = '''The parser crashes.
+Traceback (most recent call last):
+  File "auth.py", line 5, in login
+    hashed = hash_password(raw)
+TypeError: bad value
+'''
+    signals = IssueSignals.parse(issue)
+    assert signals.frames[0].path == "auth.py"
+    assert signals.frames[0].line == 5
+    assert signals.frames[0].function == "login"
+    assert signals.exceptions[0][0] == "TypeError"
+
+    loc = make_localizer(tmp_path)
+    result = loc.localize(issue)
+    assert result.scopes[0].entity.name == "login"
+    assert any("traceback" in e.source for e in result.scopes[0].evidence)
