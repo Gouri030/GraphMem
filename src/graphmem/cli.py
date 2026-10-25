@@ -30,6 +30,10 @@ def main():
         help="Number of candidate scopes to return",
     )
     localize_parser.add_argument(
+        "--ranker",
+        help="Path to a trained LightGBM LambdaMART model to re-rank retrieved scopes",
+    )
+    localize_parser.add_argument(
         "--json",
         action="store_true",
         help="Print localization results as JSON",
@@ -54,6 +58,10 @@ def main():
         }
         print(f"Languages:   {', '.join(sorted(languages))}")
         return
+
+    if args.ranker:
+        from graphmem.ranking.learned import LearnedRanker
+        result.localizer.learned_ranker = LearnedRanker.load(args.ranker)
 
     localization = result.localizer.localize(
         args.issue,

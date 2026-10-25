@@ -10,4 +10,4 @@ unidiff
 PyGithub
 datasets
 matplotlib
-httpx
+httpxlightgbm

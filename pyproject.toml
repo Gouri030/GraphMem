@@ -19,6 +19,7 @@ dependencies = [
     "unidiff",
     "PyGithub",
     "datasets",
+    "lightgbm",
     "matplotlib",
     "httpx",
     "pytest",

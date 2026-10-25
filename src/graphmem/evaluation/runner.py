@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from pathlib import Path
 import traceback
@@ -17,7 +18,7 @@ from graphmem.artifacts.models import Artifact
 from graphmem.graph.builder import GraphBuilder
 from graphmem.ingestion.cache import load_or_parse
 from graphmem.ingestion.scanner import RepositoryScanner
-from graphmem.ranking.config import RankConfig, ablation_configs
+from graphmem.ranking.config import RankConfig, ablation_configs, learned_rank_config
 from graphmem.retrieval.localizer import Localizer
 from graphmem.retrieval.providers.history import HistoryProvider
 
@@ -58,7 +59,17 @@ def _artifact_provider(repo_path: Path, repo: str, base_commit: str):
         print(f"Could not load artifacts from {artifact_path}: {exc}")
         return None
 
-    return ArtifactProvider(artifacts)
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_path), "show", "-s", "--format=%cI", base_commit],
+            check=True, capture_output=True, text=True,
+        )
+        cutoff = datetime.fromisoformat(proc.stdout.strip().replace("Z", "+00:00"))
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        print(f"Could not determine base-commit timestamp for {repo}: {exc}; disabling artifact provider")
+        return None
+
+    return ArtifactProvider(artifacts, as_of=cutoff)
 
 
 def _ranked(result) -> dict[str, list]:
@@ -140,6 +151,7 @@ def run_evaluation(
     repos_dir: str | Path,
     split: str = "dev",
     limit: int | None = None,
+    ranker_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run all configured ablations for each eligible instance and save JSON."""
     subset = json.loads(Path(subset_path).read_text(encoding="utf-8"))
@@ -185,6 +197,10 @@ def run_evaluation(
             if artifact_provider is not None:
                 providers.append(artifact_provider)
             localizer = Localizer(graph, providers=providers)
+            learned_ranker = None
+            if ranker_path is not None:
+                from graphmem.ranking.learned import LearnedRanker
+                learned_ranker = LearnedRanker.load(ranker_path)
 
             gold_by_level = {
                 "file": gold.files - gold.new_files,
@@ -194,6 +210,8 @@ def run_evaluation(
             # A config requiring unavailable artifact evidence is still run, but
             # this is recorded in metadata and should not be interpreted as an active artifact ablation.
             record["artifact_provider_available"] = artifact_provider is not None
+            record["history_provider_available"] = True
+            record["artifact_provider_count"] = len(artifact_provider.artifacts) if artifact_provider is not None else 0
             for config_name, config in configs.items():
                 t0 = time.perf_counter()
                 result = localizer.localize(instance["problem_statement"], top_k=100, config=config)
@@ -213,6 +231,36 @@ def run_evaluation(
                     **result.timings_ms,
                     "end_to_end": round((time.perf_counter() - t0) * 1000, 2),
                 }
+
+            # Evaluate the learned model as an additional system, separate from
+            # manual-weight ablations, using the same retrieved candidates and gold.
+            if learned_ranker is not None:
+                t0 = time.perf_counter()
+                localizer.learned_ranker = learned_ranker
+                # Use the same evidence weights/providers used to generate training features.
+                learned_result = localizer.localize(
+                    instance["problem_statement"],
+                    top_k=100,
+                    config=learned_rank_config(),
+                )
+                learned_ranked = _ranked(learned_result)
+                record["ranked"]["learned"] = {
+                    "files": learned_ranked["files"],
+                    "functions": learned_ranked["functions"],
+                    "statements": [list(span) for span in learned_ranked["statements"]],
+                }
+                learned_metrics = {
+                    "file": _score_level(learned_ranked["files"], gold_by_level["file"], "file"),
+                    "function": _score_level(learned_ranked["functions"], gold_by_level["function"], "function"),
+                    "statement": _statement_scores(learned_ranked["statements"], gold),
+                }
+                record["metrics"]["learned"] = learned_metrics
+                record.setdefault("timings_ms", {})["learned"] = {
+                    **learned_result.timings_ms,
+                    "end_to_end": round((time.perf_counter() - t0) * 1000, 2),
+                }
+                localizer.learned_ranker = None
+
             record["gold"] = {
                 "files": sorted(gold_by_level["file"]),
                 "functions": sorted(gold_by_level["function"]),

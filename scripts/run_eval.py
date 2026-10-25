@@ -23,6 +23,7 @@ def main() -> int:
     parser.add_argument("--subset", default="data/eval_subset.json")
     parser.add_argument("--repos", default="data/repos")
     parser.add_argument("--output", default="results")
+    parser.add_argument("--ranker", help="Path to a trained LightGBM model; evaluates it as an additional 'learned' system.")
     args = parser.parse_args()
 
     subset_path = Path(args.subset)
@@ -37,7 +38,7 @@ def main() -> int:
     limit = args.limit if args.limit is not None else (5 if args.pilot else None)
     summary = run_evaluation(
         subset_path=subset_path, output_dir=args.output, repos_dir=args.repos,
-        split=args.split, limit=limit,
+        split=args.split, limit=limit, ranker_path=args.ranker,
     )
     csv_path, md_path, chart_path = build_report(
         args.output, set(summary["completed_instance_ids"])

@@ -62,7 +62,11 @@ class LocalizationResult:
         best: dict[str, float] = {}
         for hit in self.scopes:
             if hit.entity.path:
-                best[hit.entity.path] = max(best.get(hit.entity.path, 0.0), hit.score)
+                # Learned LambdaMART scores may be negative.  Do not seed the
+                # maximum with 0.0, or every negative-scoring file is clamped
+                # to zero and the learned file ranking collapses into ties.
+                previous = best.get(hit.entity.path)
+                best[hit.entity.path] = hit.score if previous is None else max(previous, hit.score)
         return sorted(best.items(), key=lambda kv: -kv[1])
 
     def to_dict(self, max_candidates: int = 20) -> dict:
@@ -121,10 +125,12 @@ class Localizer:
         graph: GraphStore,
         config: RankConfig | None = None,
         providers: list[EvidenceProvider] | None = None,
+        learned_ranker=None,
     ) -> None:
         self.graph = graph
         self.config = config or RankConfig()
         self.providers = list(providers or [])
+        self.learned_ranker = learned_ranker
         self.index = CodeIndex(graph)
         self.scope_graph = ScopeGraph(graph)
         self.slicer = DataFlowSlicer(graph)
@@ -289,7 +295,12 @@ class Localizer:
             hits.append(ScopeHit(scope, score, strengths, evidence[sid], stmts))
         timings["statements"] = (time.perf_counter() - t) * 1000
 
-        hits.sort(key=lambda h: -h.score)
+        if self.learned_ranker is not None:
+            hits = self.learned_ranker.rerank(
+                hits, issue, statement_scope_mix=cfg.statement_scope_mix
+            )
+        else:
+            hits.sort(key=lambda h: -h.score)
         timings["total"] = (time.perf_counter() - t_start) * 1000
         return LocalizationResult(issue, cfg.name, hits[:top_k], timings)
 

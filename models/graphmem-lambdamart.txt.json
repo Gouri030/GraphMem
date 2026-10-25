@@ -1,0 +1,181 @@
+{
+  "model": "LightGBM LambdaMART",
+  "dataset": "princeton-nlp/SWE-bench",
+  "source_split": "train",
+  "max_instances_requested": 100,
+  "train_groups_processed": 52,
+  "validation_groups_processed": 15,
+  "feature_names": [
+    "signal_lexical",
+    "signal_graph",
+    "signal_dataflow",
+    "signal_history",
+    "signal_artifact",
+    "signal_semantic",
+    "baseline_score",
+    "scope_lines",
+    "path_depth",
+    "name_token_overlap",
+    "path_token_overlap",
+    "type_file",
+    "type_module",
+    "type_class",
+    "type_function",
+    "type_method",
+    "type_statement",
+    "type_other"
+  ],
+  "label_definition": "2=changed-line/callable overlap; 1=file-level candidate for changed file; 0=other",
+  "best_iteration": 5,
+  "feature_stats": {
+    "signal_lexical": {
+      "nonzero": 3102,
+      "unique": 2570,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "signal_graph": {
+      "nonzero": 1876,
+      "unique": 467,
+      "min": 0.0,
+      "max": 0.6000000238418579
+    },
+    "signal_dataflow": {
+      "nonzero": 1883,
+      "unique": 1249,
+      "min": 0.0,
+      "max": 0.5
+    },
+    "signal_history": {
+      "nonzero": 0,
+      "unique": 1,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "signal_artifact": {
+      "nonzero": 0,
+      "unique": 1,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "signal_semantic": {
+      "nonzero": 0,
+      "unique": 1,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "baseline_score": {
+      "nonzero": 3120,
+      "unique": 2820,
+      "min": 0.09000000357627869,
+      "max": 0.7749999761581421
+    },
+    "scope_lines": {
+      "nonzero": 3120,
+      "unique": 301,
+      "min": 1.0,
+      "max": 10185.0
+    },
+    "path_depth": {
+      "nonzero": 3078,
+      "unique": 9,
+      "min": 0.0,
+      "max": 8.0
+    },
+    "name_token_overlap": {
+      "nonzero": 806,
+      "unique": 84,
+      "min": 0.0,
+      "max": 0.11999999731779099
+    },
+    "path_token_overlap": {
+      "nonzero": 2508,
+      "unique": 120,
+      "min": 0.0,
+      "max": 0.1599999964237213
+    },
+    "type_file": {
+      "nonzero": 68,
+      "unique": 2,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "type_module": {
+      "nonzero": 0,
+      "unique": 1,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "type_class": {
+      "nonzero": 347,
+      "unique": 2,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "type_function": {
+      "nonzero": 823,
+      "unique": 2,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "type_method": {
+      "nonzero": 1882,
+      "unique": 2,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "type_statement": {
+      "nonzero": 0,
+      "unique": 1,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "type_other": {
+      "nonzero": 0,
+      "unique": 1,
+      "min": 0.0,
+      "max": 0.0
+    }
+  },
+  "feature_importance_split": {
+    "signal_lexical": 6,
+    "signal_graph": 4,
+    "signal_dataflow": 6,
+    "signal_history": 0,
+    "signal_artifact": 0,
+    "signal_semantic": 0,
+    "baseline_score": 18,
+    "scope_lines": 15,
+    "path_depth": 2,
+    "name_token_overlap": 6,
+    "path_token_overlap": 6,
+    "type_file": 2,
+    "type_module": 0,
+    "type_class": 2,
+    "type_function": 0,
+    "type_method": 3,
+    "type_statement": 0,
+    "type_other": 0
+  },
+  "feature_importance_gain": {
+    "signal_lexical": 59.759750843048096,
+    "signal_graph": 27.26899003982544,
+    "signal_dataflow": 53.210959911346436,
+    "signal_history": 0.0,
+    "signal_artifact": 0.0,
+    "signal_semantic": 0.0,
+    "baseline_score": 456.81636142730713,
+    "scope_lines": 269.2737078666687,
+    "path_depth": 21.17824935913086,
+    "name_token_overlap": 80.73777961730957,
+    "path_token_overlap": 54.83621025085449,
+    "type_file": 25.922900199890137,
+    "type_module": 0.0,
+    "type_class": 40.8419303894043,
+    "type_function": 0.0,
+    "type_method": 34.13599967956543,
+    "type_statement": 0.0,
+    "type_other": 0.0
+  },
+  "note": "Validation is a held-out subset sampled from SWE-bench train. Keep SWE-bench Lite/Verified test examples untouched for final evaluation."
+}

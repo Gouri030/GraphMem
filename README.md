@@ -64,3 +64,17 @@ docs/               architecture and project documentation
 ## Dependencies
 
 Runtime dependencies are declared in `pyproject.toml`. Pytest is declared in `pyproject.toml` so the standard install includes the test runner.
+
+## Learned ranking (LambdaMART)
+
+GraphMem supports an optional LightGBM LambdaMART model that learns to re-rank retrieved code scopes from SWE-bench training examples. See [`docs/learned_ranking.md`](docs/learned_ranking.md) for training, inference, and evaluation instructions.
+
+Quick start:
+
+```bash
+pip install -e .
+python scripts/train_ranker.py --max-instances 30 --repo-dir .cache/swebench-repos
+graphmem-localize localize /path/to/repository "Describe the bug" --ranker models/graphmem-lambdamart.txt
+```
+
+The existing manually weighted ranker remains the default. Keep SWE-bench Lite/Verified test examples held out from training and tuning.
