@@ -62,7 +62,7 @@ class OpenAICompatibleProvider(LLMProvider):
         base_url: str | None = None,
         model: str | None = None,
         api_key: str | None = None,
-        timeout: float = 30.0,
+        timeout: float = 1000.0,
     ) -> None:
         self.base_url = (
             base_url or os.getenv(

@@ -24,6 +24,8 @@ def main() -> int:
     parser.add_argument("--repos", default="data/repos")
     parser.add_argument("--output", default="results")
     parser.add_argument("--ranker", help="Path to a trained LightGBM model; evaluates it as an additional 'learned' system.")
+    parser.add_argument("--llm", action="store_true", help="Enable the full+LLM agent reranker (uses GRAPHMEM_LLM_* settings).")
+    parser.add_argument("--llm-timeout", type=float, default=1000.0, help="Per-request LLM timeout in seconds.")
     args = parser.parse_args()
 
     subset_path = Path(args.subset)
@@ -39,6 +41,7 @@ def main() -> int:
     summary = run_evaluation(
         subset_path=subset_path, output_dir=args.output, repos_dir=args.repos,
         split=args.split, limit=limit, ranker_path=args.ranker,
+        use_llm=args.llm, llm_timeout_seconds=args.llm_timeout,
     )
     csv_path, md_path, chart_path = build_report(
         args.output, set(summary["completed_instance_ids"])

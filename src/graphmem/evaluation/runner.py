@@ -19,6 +19,8 @@ from graphmem.graph.builder import GraphBuilder
 from graphmem.ingestion.cache import load_or_parse
 from graphmem.ingestion.scanner import RepositoryScanner
 from graphmem.ranking.config import RankConfig, ablation_configs, learned_rank_config
+from graphmem.agent.agent import LocalizationAgent
+from graphmem.llm.providers import OpenAICompatibleProvider
 from graphmem.retrieval.localizer import Localizer
 from graphmem.retrieval.providers.history import HistoryProvider
 
@@ -72,8 +74,11 @@ def _artifact_provider(repo_path: Path, repo: str, base_commit: str):
     return ArtifactProvider(artifacts, as_of=cutoff)
 
 
-def _ranked(result) -> dict[str, list]:
-    files = [path for path, _ in result.files]
+def _ranked(result, preserve_scope_order: bool = False) -> dict[str, list]:
+    if preserve_scope_order:
+        files = list(dict.fromkeys(hit.entity.path for hit in result.scopes if hit.entity.path))
+    else:
+        files = [path for path, _ in result.files]
     functions: list[str] = []
     statement_hits: dict[tuple[str, int, int], float] = {}
     # Scope hits and statements are ranked separately; flatten statements by
@@ -88,9 +93,17 @@ def _ranked(result) -> dict[str, list]:
         for statement in hit.statements:
             span = (entity.path or "", statement.start_line, statement.end_line)
             statement_hits[span] = max(statement_hits.get(span, float("-inf")), statement.score)
-    statements = [span for span, _ in sorted(
-        statement_hits.items(), key=lambda item: (-item[1], item[0])
-    )]
+    if preserve_scope_order:
+        statements = []
+        for hit in result.scopes:
+            for statement in sorted(hit.statements, key=lambda st: -st.score):
+                span = (hit.entity.path or "", statement.start_line, statement.end_line)
+                if span not in statements:
+                    statements.append(span)
+    else:
+        statements = [span for span, _ in sorted(
+            statement_hits.items(), key=lambda item: (-item[1], item[0])
+        )]
     return {"files": files, "functions": functions, "statements": statements}
 
 
@@ -152,6 +165,8 @@ def run_evaluation(
     split: str = "dev",
     limit: int | None = None,
     ranker_path: str | Path | None = None,
+    use_llm: bool = False,
+    llm_timeout_seconds: float = 1000.0,
 ) -> dict[str, Any]:
     """Run all configured ablations for each eligible instance and save JSON."""
     subset = json.loads(Path(subset_path).read_text(encoding="utf-8"))
@@ -162,9 +177,13 @@ def run_evaluation(
     instance_dir = output_dir / "instances"
     instance_dir.mkdir(parents=True, exist_ok=True)
     configs = ablation_configs()
+    llm_provider = OpenAICompatibleProvider(timeout=llm_timeout_seconds) if use_llm else None
     summary: dict[str, Any] = {
         "split": split, "requested_instances": len(instances), "completed": 0,
         "completed_instance_ids": [], "skipped": [], "config_results": {},
+        "llm_enabled": use_llm,
+        "llm_model": llm_provider.model if llm_provider else None,
+        "llm_base_url": llm_provider.base_url if llm_provider else None,
     }
 
     for instance in instances:
@@ -214,8 +233,40 @@ def run_evaluation(
             record["artifact_provider_count"] = len(artifact_provider.artifacts) if artifact_provider is not None else 0
             for config_name, config in configs.items():
                 t0 = time.perf_counter()
-                result = localizer.localize(instance["problem_statement"], top_k=100, config=config)
-                ranked = _ranked(result)
+                if config_name == "full+LLM":
+                    agent = LocalizationAgent(
+                        localizer, str(repo_path), provider=llm_provider,
+                        timeout_seconds=llm_timeout_seconds,
+                    )
+                    agent_result = agent.localize(
+                        instance["problem_statement"], top_k=100, config=config,
+                        use_llm=use_llm,
+                    )
+                    result = localizer.localize(instance["problem_statement"], top_k=100, config=config)
+                    # Reorder only existing deterministic scope hits according to the validated agent output.
+                    by_location = {}
+                    for hit in result.scopes:
+                        ent = hit.entity
+                        key = (ent.path or "<unknown>", ent.qualified_name or ent.name or "<unknown>",
+                               int(ent.start_line or 1), int(ent.end_line or ent.start_line or 1))
+                        by_location[key] = hit
+                    ordered_hits = []
+                    used_keys = set()
+                    for item in agent_result["locations"]:
+                        loc = item["location"]
+                        key = (loc["file"], loc["scope"], int(loc["start_line"]), int(loc["end_line"]))
+                        if key in by_location and key not in used_keys:
+                            ordered_hits.append(by_location[key]); used_keys.add(key)
+                    ordered_hits.extend(hit for hit in result.scopes if hit not in ordered_hits)
+                    result.scopes = ordered_hits
+                    record.setdefault("agent", {})[config_name] = {
+                        "tool_trace": agent_result["tool_trace"],
+                        "llm": agent_result["llm"],
+                        "query_plan": agent_result["query_plan"],
+                    }
+                else:
+                    result = localizer.localize(instance["problem_statement"], top_k=100, config=config)
+                ranked = _ranked(result, preserve_scope_order=(config_name == "full+LLM"))
                 record["ranked"][config_name] = {
                     "files": ranked["files"],
                     "functions": ranked["functions"],

@@ -75,6 +75,11 @@ def ablation_configs() -> dict[str, RankConfig]:
             artifact=0.10,
             semantic=0.0,
         ),
+        # The same deterministic ranker; the evaluation runner can optionally
+        # apply the agent LLM re-ranker after this candidate-generation stage.
+        "full+LLM": base.with_weights(
+            "full+LLM", graph=0.50, dataflow=0.25, history=0.15, artifact=0.10, semantic=0.0,
+        ),
     }
 
 
