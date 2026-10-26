@@ -11,22 +11,41 @@ from graphmem.llm.providers import MockProvider
 
 def _agent(tmp_path: Path, response: str):
     (tmp_path / "sample.py").write_text(
-        "def parse_value(value):\n    return int(value)\n\ndef format_value(value):\n    return str(value)\n",
+        "def parse_value(value):\n"
+        "    return int(value)\n\n"
+        "def format_value(value):\n"
+        "    return str(value)\n",
         encoding="utf-8",
     )
+
     scanner = RepositoryScanner(str(tmp_path))
     parser = scanner.get_parser()
     parsed = (
         parser.parse_repository(str(tmp_path))
-            if hasattr(parser, "parse_repository")
-            else None
+        if hasattr(parser, "parse_repository")
+        else None
     )
+
     if parsed is None:
         from graphmem.ingestion.cache import load_or_parse
         parsed = load_or_parse(scanner.repository_path, parser)
+
     from graphmem.retrieval.localizer import Localizer
+
     localizer = Localizer(GraphBuilder().build(parsed))
-    return LocalizationAgent(localizer, str(tmp_path), MockProvider([response]))
+
+    issue_signals_response = json.dumps({
+        "keywords": ["parse_value", "converting input"],
+        "symbols": ["parse_value"],
+        "error_terms": [],
+        "search_queries": ["parse_value input conversion"],
+    })
+
+    return LocalizationAgent(
+        localizer,
+        str(tmp_path),
+        MockProvider([issue_signals_response, response]),
+    )
 
 
 def test_agent_rejects_hallucinated_location_and_falls_back(tmp_path):
@@ -46,7 +65,24 @@ def test_agent_accepts_only_known_candidates(tmp_path):
     hit = deterministic.scopes[0]
     entity = hit.entity
     key = f"{entity.path}::{entity.qualified_name or entity.name}:{entity.start_line or 1}-{entity.end_line or entity.start_line or 1}"
-    agent.provider = MockProvider([json.dumps({"locations": [{"location_id": key, "reason": "Matches the parser failure."}]})])
+    issue_signals_response = json.dumps({
+        "keywords": ["parse_value", "converting input"],
+        "symbols": ["parse_value"],
+        "error_terms": [],
+        "search_queries": ["parse_value input conversion"],
+    })
+
+    rerank_response = json.dumps({
+        "locations": [{
+            "location_id": key,
+            "reason": "Matches the parser failure.",
+        }]
+    })
+
+    agent.provider = MockProvider([
+        issue_signals_response,
+        rerank_response,
+    ])
     result = agent.localize("parse_value fails converting input")
     assert result["locations"][0]["reason"] == "Matches the parser failure."
     assert result["llm"]["fallback_reason"] is None
